@@ -1,0 +1,962 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Plus, Edit, Trash2, BarChart, StickyNote, FolderPlus, Save
+} from 'lucide-react';
+import Modal from "./Modal";
+
+// ✅ 新增：拖曳套件（相容 React 19）
+import {
+  DragDropContext,
+  Droppable,
+  Draggable,
+  DropResult,
+} from '@hello-pangea/dnd';
+
+// ========= 型別 =========
+interface AiEvaluation {
+  進度評估: string;
+  風險判斷: string;
+  建議: string[];
+}
+
+interface Project {
+  id: number;
+  name: string;
+  startDate: string;
+  endDate: string;
+  duration: number;
+  progress: number;
+  memo: string;
+  tasks: any[];
+  aiEvaluation?: AiEvaluation;
+}
+
+interface ProjectGroup {
+  id: number;
+  name: string;
+  projects: Project[];
+}
+
+interface GanttChartProps {
+  projects: Project[];
+  showMemo: (projectId: number) => void;
+}
+
+// ========= 元件 =========
+const ProjectManagementSystem: React.FC = () => {
+  // ====== Modal / Loading 狀態 ======
+  const [modalData, setModalData] = useState<AiEvaluation | null>(null);
+  const [showAiModal, setShowAiModal] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  // ====== 狀態 ======
+  const [groups, setGroups] = useState<ProjectGroup[]>([]);
+  const [activeGroupId, setActiveGroupId] = useState<number | null>(null);
+
+  // ====== 群組 UI 狀態 ======
+  const [showAddGroup, setShowAddGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
+  const [editingGroupName, setEditingGroupName] = useState('');
+
+  // ====== 專案 UI 狀態 ======
+  const [showAddProject, setShowAddProject] = useState(false);
+  const [showEditProject, setShowEditProject] = useState(false);
+  const [showMemoModal, setShowMemoModal] = useState(false);
+
+  const [newProject, setNewProject] = useState<Omit<Project, 'id' | 'duration' | 'tasks'>>({
+    name: '',
+    startDate: '',
+    endDate: '',
+    progress: 0,
+    memo: ''
+  });
+
+  const [editingProject, setEditingProject] = useState<Project>({
+    id: 0,
+    name: '',
+    startDate: '',
+    endDate: '',
+    duration: 0,
+    progress: 0,
+    memo: '',
+    tasks: []
+  });
+
+  const [currentMemo, setCurrentMemo] = useState<{ projectId: number | null; content: string }>({
+    projectId: null,
+    content: ''
+  });
+
+  // ===== 工具：計算工期 =====
+  const calculateDuration = (startDate: string, endDate: string): number => {
+    if (!startDate || !endDate) return 0;
+    const start = new Date(startDate).getTime();
+    const end = new Date(endDate).getTime();
+    const diffTime = Math.abs(end - start);
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+  };
+
+  // ====== 初始化：讀取 data.json ======
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const res = await fetch("http://localhost:5000/load");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.length > 0) {
+            setGroups(data);
+            setActiveGroupId(data[0].id);
+            return;
+          }
+        }
+      } catch (err) {
+        console.error("讀取 data.json 失敗:", err);
+      }
+
+      // 預設群組
+      const defaultGroup: ProjectGroup = {
+        id: 1,
+        name: '預設專案群組',
+        projects: [
+          {
+            id: 1,
+            name: '系統建置',
+            startDate: '2025-09-18',
+            endDate: '2025-09-19',
+            duration: 1,
+            progress: 0,
+            memo: '需要先完成需求分析',
+            tasks: []
+          },
+          {
+            id: 2,
+            name: '系統根據人資條件進行調整',
+            startDate: '2025-09-19',
+            endDate: '2025-10-20',
+            duration: 31,
+            progress: 0,
+            memo: '等待人資部門確認規格',
+            tasks: []
+          },
+          {
+            id: 3,
+            name: '系統轉移至內部系統',
+            startDate: '2025-10-20',
+            endDate: '2025-12-31',
+            duration: 72,
+            progress: 0,
+            memo: '需要IT部門協助',
+            tasks: []
+          }
+        ]
+      };
+      setGroups([defaultGroup]);
+      setActiveGroupId(defaultGroup.id);
+    };
+
+    fetchData();
+  }, []);
+
+  // ====== 呼叫 AI 評估 ======
+  const evaluateProject = async (project: Project) => {
+    setLoading(true);
+    try {
+      // 🔹 計算工期
+      const duration = calculateDuration(project.startDate, project.endDate);
+
+      // 🔹 計算已經過天數
+      const daysPassed = Math.max(
+        0,
+        Math.min(
+          Math.floor((Date.now() - new Date(project.startDate).getTime()) / (1000 * 60 * 60 * 24)) + 1,
+          duration
+        )
+      );
+
+      // 🔹 EV（實際進度）
+      const EV = project.progress;
+
+      // 🔹 PV（計劃進度）
+      const PV = duration > 0 ? (daysPassed / duration) * 100 : 0;
+
+      // 🔹 SPI（進度績效指標）
+      const SPI = PV > 0 ? (EV / PV).toFixed(2) : "N/A";
+
+      // 🔹 組裝送往後端的 payload
+      const payload = {
+        ...project,
+        duration,
+        EV,
+        PV,
+        SPI,
+        totalDuration: duration, // 單專案就是自身工期
+      };
+
+      const res = await fetch("http://localhost:5000/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setGroups(prev =>
+          prev.map(g =>
+            g.id === activeGroupId
+              ? {
+                  ...g,
+                  projects: g.projects.map(p =>
+                    p.id === project.id ? { ...p, aiEvaluation: data.aiEvaluation } : p
+                  ),
+                }
+              : g
+          )
+        );
+        setModalData(data.aiEvaluation);
+        setShowAiModal(true);
+      } else {
+        alert("❌ AI 評估失敗");
+      }
+    } catch (err) {
+      console.error("AI 評估錯誤:", err);
+      alert("❌ 無法連線到 AI");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ====== 存檔 ======
+  const saveToServer = async () => {
+    try {
+      const res = await fetch("http://localhost:5000/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(groups),
+      });
+      if (res.ok) {
+        alert("✅ 專案資料已存檔成功！");
+      }
+    } catch (err) {
+      console.error("存檔失敗:", err);
+      alert("❌ 無法存檔，請檢查後端是否啟動");
+    }
+  };
+
+  // ===== 群組操作 =====
+  const addGroup = () => {
+    if (!newGroupName.trim()) return;
+    const defaultGroup = groups.find(g => g.name === '預設專案群組');
+    const newGroup: ProjectGroup = {
+      id: Date.now(),
+      name: newGroupName,
+      projects: defaultGroup
+        ? defaultGroup.projects.map(p => ({
+          ...p,
+          id: Date.now() + Math.floor(Math.random() * 10000),
+          tasks: [...p.tasks],
+        }))
+        : []
+    };
+    setGroups(prev => [...prev, newGroup]);
+    setActiveGroupId(newGroup.id);
+    setNewGroupName('');
+    setShowAddGroup(false);
+  };
+
+  const deleteGroup = (groupId: number) => {
+    if (groups.length === 1) {
+      alert('至少要保留一個群組！');
+      return;
+    }
+    const updated = groups.filter(g => g.id !== groupId);
+    setGroups(updated);
+    if (activeGroupId === groupId && updated.length > 0) {
+      setActiveGroupId(updated[0].id);
+    }
+  };
+
+  const startRenameGroup = (groupId: number, currentName: string) => {
+    setEditingGroupId(groupId);
+    setEditingGroupName(currentName);
+  };
+
+  const saveRenameGroup = () => {
+    setGroups(prev =>
+      prev.map(g => (g.id === editingGroupId ? { ...g, name: editingGroupName } : g))
+    );
+    setEditingGroupId(null);
+    setEditingGroupName('');
+  };
+
+  // ===== 目前群組 =====
+  const activeGroup = groups.find(g => g.id === activeGroupId);
+
+  // ===== 專案操作 =====
+  const addProject = () => {
+    if (!activeGroup) return;
+    const { name, startDate, endDate } = newProject;
+    if (!name || !startDate || !endDate) return;
+    const duration = calculateDuration(startDate, endDate);
+    const project: Project = {
+      id: Date.now(),
+      ...newProject,
+      duration,
+      tasks: []
+    };
+    setGroups(prev =>
+      prev.map(g => (g.id === activeGroupId ? { ...g, projects: [...g.projects, project] } : g))
+    );
+    setNewProject({ name: '', startDate: '', endDate: '', progress: 0, memo: '' });
+    setShowAddProject(false);
+  };
+
+  const startEdit = (project: Project) => {
+    setEditingProject({ ...project });
+    setShowEditProject(true);
+  };
+
+  const saveEditProject = () => {
+    if (!activeGroup) return;
+    const { name, startDate, endDate } = editingProject;
+    if (!name || !startDate || !endDate) return;
+    const duration = calculateDuration(startDate, endDate);
+    const updated: Project = { ...editingProject, duration, tasks: editingProject.tasks ?? [] };
+    setGroups(prev =>
+      prev.map(g =>
+        g.id === activeGroupId
+          ? { ...g, projects: g.projects.map(p => (p.id === updated.id ? updated : p)) }
+          : g
+      )
+    );
+    setShowEditProject(false);
+  };
+
+  const deleteProject = (id: number) => {
+    setGroups(prev =>
+      prev.map(g =>
+        g.id === activeGroupId ? { ...g, projects: g.projects.filter(p => p.id !== id) } : g
+      )
+    );
+  };
+
+  const updateProgress = (id: number, value: number) => {
+    const progress = Math.max(0, Math.min(100, value));
+    setGroups(prev =>
+      prev.map(g =>
+        g.id === activeGroupId
+          ? { ...g, projects: g.projects.map(p => (p.id === id ? { ...p, progress } : p)) }
+          : g
+      )
+    );
+  };
+
+  // ===== 備註 =====
+  const showMemo = (projectId: number) => {
+    const project = activeGroup?.projects.find(p => p.id === projectId);
+    setCurrentMemo({ projectId, content: project?.memo || '' });
+    setShowMemoModal(true);
+  };
+
+  const saveMemo = () => {
+    if (!activeGroup) return;
+    setGroups(prev =>
+      prev.map(g =>
+        g.id === activeGroupId
+          ? {
+            ...g,
+            projects: g.projects.map(p =>
+              p.id === currentMemo.projectId ? { ...p, memo: currentMemo.content } : p
+            )
+          }
+          : g
+      )
+    );
+    setShowMemoModal(false);
+  };
+
+  // ===== 甘特圖 =====
+  const GanttChart: React.FC<GanttChartProps> = ({ projects, showMemo }) => {
+    if (projects.length === 0) return null;
+    const todayMs = Date.now();
+    const startMs = Math.min(...projects.map(p => new Date(p.startDate).getTime()));
+    const endMs = Math.max(...projects.map(p => new Date(p.endDate).getTime()));
+    const totalDays = Math.ceil((endMs - startMs) / (1000 * 60 * 60 * 24)) + 1;
+
+    // 動態刻度：一年內每 7 天顯示一次，超過一年每 30 天顯示一次
+    const tickStep = totalDays > 365 ? 30 : 7;
+    const labelForIndex = (i: number) => {
+      const d = new Date(startMs + i * 86400000);
+      // 超過一年 → 顯示 YYYY/MM；一年內 → 顯示 MM/DD
+      return totalDays > 365
+        ? `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}`
+        : `${d.getMonth() + 1}/${d.getDate()}`;
+    };
+
+    return (
+      <div className="bg-white p-6 rounded-lg shadow-lg">
+        <h3 className="text-2xl font-bold mb-4 flex items-center">
+          <BarChart className="mr-2" />
+          甘特圖視圖
+        </h3>
+        <div className="overflow-x-auto">
+          <div className="min-w-[1000px]">
+            {/* 表頭 */}
+            <div className="flex mb-4 text-lg text-gray-600 border-b pb-2">
+              <div className="w-64 font-medium">專案名稱</div>
+              <div className="w-24 text-lg text-center">工期</div>
+              <div className="w-16 text-lg text-center">備註</div>
+              <div className="flex-1 text-lg text-center">時間軸</div>
+            </div>
+
+            {/* 日期刻度（動態） */}
+            <div className="flex">
+              <div className="w-64"></div>
+              <div className="w-24"></div>
+              <div className="w-16"></div>
+              <div className="flex-1">
+                <div className="relative h-6 mb-2 text-gray-500">
+                  {/* 用絕對定位放刻度標籤，避免大量天數時擠在一起 */}
+                  {Array.from({ length: totalDays }).map((_, i) => {
+                    if (i % tickStep !== 0) return null;
+                    const leftPct = (i / totalDays) * 100;
+                    return (
+                      <div
+                        key={i}
+                        className="absolute text-sm -translate-x-1/2"
+                        style={{ left: `${leftPct}%` }}
+                      >
+                        {labelForIndex(i)}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* 專案條 */}
+            {projects.map(project => {
+              const start = new Date(project.startDate).getTime();
+              const end = new Date(project.endDate).getTime();
+              const startOffset = Math.ceil((start - startMs) / (1000 * 60 * 60 * 24));
+              const widthDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
+              const todayOffset = Math.ceil((todayMs - startMs) / (1000 * 60 * 60 * 24));
+
+              return (
+                <div key={project.id} className="flex items-center mb-4 hover:bg-gray-50 p-2 rounded">
+                  <div className="w-64 pr-4">
+                    <div className="text-base font-medium truncate" title={project.name}>
+                      {project.name}
+                    </div>
+                    <div className="text-sm text-gray-500">
+                      {project.startDate} ~ {project.endDate}
+                    </div>
+                  </div>
+
+                  <div className="w-24 text-center text-lg">{project.duration}天</div>
+
+                  <div className="w-16 text-center">
+                    <button
+                      onClick={() => showMemo(project.id)}
+                      className="p-1 text-blue-500 hover:bg-blue-100 rounded"
+                      title={project.memo || '添加備註'}
+                    >
+                      <StickyNote className={`w-4 h-4 ${project.memo ? 'fill-current' : ''}`} />
+                    </button>
+                  </div>
+
+                  <div className="flex-1 relative h-8">
+                    <div
+                      className="absolute h-6 bg-blue-200 rounded border border-blue-300"
+                      style={{
+                        left: `${(startOffset / totalDays) * 100}%`,
+                        width: `${(widthDays / totalDays) * 100}%`,
+                        minWidth: '20px'
+                      }}
+                    >
+                      <div className="h-full bg-blue-500 rounded" style={{ width: `${project.progress}%` }} />
+                      <div className="absolute inset-0 flex items-center justify-center text-sm text-white font-medium">
+                        {project.progress}%
+                      </div>
+                    </div>
+
+                    {todayOffset >= 0 && todayOffset <= totalDays && (
+                      <div
+                        className="absolute top-0 bottom-0 border-l border-dashed z-10"
+                        style={{ left: `${(todayOffset / totalDays) * 100}%` }}
+                        title="今日"
+                      />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ✅ 新增：拖曳結束處理（群組排序 + 專案排序）
+  const onDragEnd = (result: DropResult) => {
+    const { source, destination, type } = result;
+    if (!destination) return;
+
+    // 群組水平排序
+    if (type === 'GROUP') {
+      const reordered = Array.from(groups);
+      const [moved] = reordered.splice(source.index, 1);
+      reordered.splice(destination.index, 0, moved);
+      setGroups(reordered);
+      return;
+    }
+
+    // 專案垂直排序（目前只對「當前分頁的群組」內排序）
+    if (type === 'PROJECT' && activeGroupId !== null) {
+      const gi = groups.findIndex(g => g.id === activeGroupId);
+      if (gi === -1) return;
+
+      const newGroups = Array.from(groups);
+      const projList = Array.from(newGroups[gi].projects);
+      const [moved] = projList.splice(source.index, 1);
+      projList.splice(destination.index, 0, moved);
+      newGroups[gi] = { ...newGroups[gi], projects: projList };
+      setGroups(newGroups);
+    }
+  };
+
+  // ========= UI =========
+  return (
+    <div className="min-h-screen bg-gray-50 p-6">
+      <div className="max-w-7xl mx-auto">
+        {/* 標題欄 */}
+        <div className="mb-6 flex justify-between items-center">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-800 mb-2">專案進度監控與建議系統</h1>
+            <p className="text-gray-600">AI驅動的專案進度監控與建議系統</p>
+          </div>
+          <button
+            onClick={saveToServer}
+            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            <Save className="mr-2 w-5 h-5" />
+            存檔
+          </button>
+        </div>
+
+        {/* ✅ 用 DragDropContext 包住「群組分頁 + 群組內容」 */}
+        <DragDropContext onDragEnd={onDragEnd}>
+          {/* 群組分頁（可拖曳排序） */}
+          <Droppable droppableId="group-tabs" direction="horizontal" type="GROUP">
+            {(provided) => (
+              <div
+                className="flex space-x-2 mb-6"
+                ref={provided.innerRef}
+                {...provided.droppableProps}
+              >
+                {groups.map((group, index) => (
+                  <Draggable key={group.id} draggableId={`group-${group.id}`} index={index}>
+                    {(prov) => (
+                      <div
+                        ref={prov.innerRef}
+                        {...prov.draggableProps}
+                        {...prov.dragHandleProps}
+                        className={`px-4 py-2 rounded-t-lg cursor-pointer ${activeGroupId === group.id
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-200 text-gray-700'
+                          }`}
+                        onClick={() => setActiveGroupId(group.id)}
+                      >
+                        {editingGroupId === group.id ? (
+                          <div className="flex items-center space-x-2">
+                            <input
+                              className="px-2 py-1 border rounded text-black bg-white"
+                              value={editingGroupName}
+                              onChange={e => setEditingGroupName(e.target.value)}
+                            />
+                            <button onClick={saveRenameGroup} className="text-green-600">✔</button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center space-x-2">
+                            <span>{group.name}</span>
+                            <button onClick={() => startRenameGroup(group.id, group.name)}>
+                              <Edit className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => deleteGroup(group.id)}>
+                              <Trash2 className="w-4 h-4 text-red-600" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </Draggable>
+                ))}
+                {provided.placeholder}
+                <button
+                  onClick={() => setShowAddGroup(true)}
+                  className="px-4 py-2 bg-green-500 text-white rounded-lg flex items-center"
+                >
+                  <FolderPlus className="mr-2 w-5 h-5" />
+                  新增群組
+                </button>
+              </div>
+            )}
+          </Droppable>
+
+          {/* 群組內容 */}
+          {activeGroup && (
+            <div className="space-y-6">
+              {/* 專案清單（專案可拖曳排序） */}
+              <div className="bg-white p-6 rounded-lg shadow-lg">
+                <h3 className="text-2xl font-bold mb-4 flex items-center">
+                  <Plus className="mr-2" /> 專案清單
+                </h3>
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="bg-gray-100">
+                      <th className="border px-4 py-2">專案名稱</th>
+                      <th className="border px-4 py-2">開始日期</th>
+                      <th className="border px-4 py-2">結束日期</th>
+                      <th className="border px-4 py-2">工期</th>
+                      <th className="border px-4 py-2">進度值(EV)</th>
+                      <th className="border px-4 py-2">計劃值(PV)</th>
+                      <th className="border px-4 py-2">SPI</th>
+                      <th className="border px-4 py-2">操作</th>
+                    </tr>
+                  </thead>
+
+                  {/* ✅ 這裡把 <tbody> 變成 Droppable；每個 <tr> 變 Draggable */}
+                  <Droppable droppableId="project-rows" direction="vertical" type="PROJECT">
+                    {(dropProvided) => (
+                      <tbody ref={dropProvided.innerRef} {...dropProvided.droppableProps}>
+                        {activeGroup.projects.map((project, index) => {
+                          const daysPassed = Math.max(
+                            0,
+                            Math.min(
+                              Math.floor((Date.now() - new Date(project.startDate).getTime()) / (1000 * 60 * 60 * 24)) + 1,
+                              project.duration
+                            )
+                          );
+                          const PV = (daysPassed / project.duration) * 100;
+                          const EV = project.progress;
+                          const SPI = PV > 0 ? (EV / PV).toFixed(2) : "N/A";
+
+                          return (
+                            <Draggable key={project.id} draggableId={`project-${project.id}`} index={index}>
+                              {(rowProvided) => (
+                                <tr
+                                  ref={rowProvided.innerRef}
+                                  {...rowProvided.draggableProps}
+                                  {...rowProvided.dragHandleProps}
+                                >
+                                  <td className="border px-4 py-2">{project.name}</td>
+                                  <td className="border px-4 py-2">{project.startDate}</td>
+                                  <td className="border px-4 py-2">{project.endDate}</td>
+                                  <td className="border px-4 py-2">{project.duration} 天</td>
+                                  <td className="border px-4 py-2">
+                                    <input
+                                      type="number"
+                                      value={project.progress}
+                                      onChange={e => updateProgress(project.id, parseInt(e.target.value) || 0)}
+                                      className="w-16 border rounded px-1"
+                                    />%
+                                  </td>
+                                  <td className="border px-4 py-2">{PV.toFixed(2)}%</td>
+                                  <td className="border px-4 py-2">{SPI}</td>
+                                  <td className="border px-4 py-2 space-x-2">
+                                    <button
+                                      onClick={() => startEdit(project)}
+                                      className="px-2 py-1 bg-blue-500 text-white rounded"
+                                    >
+                                      編輯
+                                    </button>
+                                    <button
+                                      onClick={() => deleteProject(project.id)}
+                                      className="px-2 py-1 bg-red-500 text-white rounded"
+                                    >
+                                      刪除
+                                    </button>
+                                    <button
+                                      onClick={() => evaluateProject(project)}
+                                      className="px-2 py-1 bg-purple-500 text-white rounded"
+                                    >
+                                      GAI評估
+                                    </button>
+                                    <button
+                                      onClick={() => showMemo(project.id)}
+                                      className="px-2 py-1 bg-yellow-500 text-white rounded"
+                                    >
+                                      備註
+                                    </button>
+                                  </td>
+                                </tr>
+                              )}
+                            </Draggable>
+                          );
+                        })}
+
+                        {/* ✅ 讓 placeholder 合法置於表格：放在一列的 <td> 裡 */}
+                        <tr>
+                          <td colSpan={8}>{dropProvided.placeholder}</td>
+                        </tr>
+
+                        {/* 🔽 總計列（原樣保留） */}
+                        {activeGroup.projects.length > 0 && (() => {
+                          const totalDuration = activeGroup.projects.reduce((sum, p) => sum + p.duration, 0);
+
+                          const totalPV =
+                            totalDuration > 0
+                              ? activeGroup.projects.reduce((sum, p) => {
+                                  const daysPassed = Math.max(
+                                    0,
+                                    Math.min(
+                                      Math.floor((Date.now() - new Date(p.startDate).getTime()) / (1000 * 60 * 60 * 24)) + 1,
+                                      p.duration
+                                    )
+                                  );
+                                  const pv = (daysPassed / p.duration) * 100;
+                                  return sum + pv * p.duration;
+                                }, 0) / totalDuration
+                              : 0;
+
+                          const totalEV =
+                            totalDuration > 0
+                              ? activeGroup.projects.reduce((sum, p) => sum + (p.progress || 0) * p.duration, 0) / totalDuration
+                              : 0;
+
+                          const totalSPI = totalPV > 0 ? (totalEV / totalPV).toFixed(2) : "N/A";
+
+                          return (
+                            <tr className="bg-gray-200 font-bold">
+                              <td className="border px-4 py-2 text-center" colSpan={3}>
+                                整體總計
+                              </td>
+                              <td className="border px-4 py-2">{totalDuration} 天</td>
+                              <td className="border px-4 py-2">{totalEV.toFixed(2)}%</td>
+                              <td className="border px-4 py-2">{totalPV.toFixed(2)}%</td>
+                              <td className="border px-4 py-2">{totalSPI}</td>
+                              <td className="border px-4 py-2"></td>
+                            </tr>
+                          );
+                        })()}
+                      </tbody>
+                    )}
+                  </Droppable>
+                </table>
+                <button
+                  onClick={() => setShowAddProject(true)}
+                  className="mt-4 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                >
+                  新增專案
+                </button>
+              </div>
+
+              {/* 甘特圖 */}
+              <GanttChart projects={activeGroup.projects} showMemo={showMemo} />
+            </div>
+          )}
+        </DragDropContext>
+
+        {/* 新增專案 Modal */}
+        {showAddProject && (
+          <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
+            <div className="bg-white p-6 rounded-lg shadow-lg w-96">
+              <h3 className="text-xl font-bold mb-4">新增專案</h3>
+              <input
+                type="text"
+                placeholder="專案名稱"
+                value={newProject.name}
+                onChange={e => setNewProject({ ...newProject, name: e.target.value })}
+                className="w-full border px-3 py-2 rounded mb-4"
+              />
+              <input
+                type="date"
+                value={newProject.startDate}
+                onChange={e => setNewProject({ ...newProject, startDate: e.target.value })}
+                className="w-full border px-3 py-2 rounded mb-4"
+              />
+              <input
+                type="date"
+                value={newProject.endDate}
+                onChange={e => setNewProject({ ...newProject, endDate: e.target.value })}
+                className="w-full border px-3 py-2 rounded mb-4"
+              />
+              <textarea
+                placeholder="備註"
+                value={newProject.memo}
+                onChange={e => setNewProject({ ...newProject, memo: e.target.value })}
+                className="w-full border px-3 py-2 rounded mb-4"
+              />
+              <div className="flex justify-end space-x-2">
+                <button
+                  onClick={addProject}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg"
+                >
+                  新增
+                </button>
+                <button
+                  onClick={() => setShowAddProject(false)}
+                  className="px-4 py-2 bg-gray-300 rounded-lg"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 編輯專案 Modal */}
+        {showEditProject && (
+          <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
+            <div className="bg-white p-6 rounded-lg shadow-lg w-96">
+              <h3 className="text-xl font-bold mb-4">編輯專案</h3>
+              <input
+                type="text"
+                value={editingProject.name}
+                onChange={e => setEditingProject({ ...editingProject, name: e.target.value })}
+                className="w-full border px-3 py-2 rounded mb-4"
+              />
+              <input
+                type="date"
+                value={editingProject.startDate}
+                onChange={e => setEditingProject({ ...editingProject, startDate: e.target.value })}
+                className="w-full border px-3 py-2 rounded mb-4"
+              />
+              <input
+                type="date"
+                value={editingProject.endDate}
+                onChange={e => setEditingProject({ ...editingProject, endDate: e.target.value })}
+                className="w-full border px-3 py-2 rounded mb-4"
+              />
+              <textarea
+                value={editingProject.memo}
+                onChange={e => setEditingProject({ ...editingProject, memo: e.target.value })}
+                className="w-full border px-3 py-2 rounded mb-4"
+              />
+              <div className="flex justify-end space-x-2">
+                <button
+                  onClick={saveEditProject}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg"
+                >
+                  儲存
+                </button>
+                <button
+                  onClick={() => setShowEditProject(false)}
+                  className="px-4 py-2 bg-gray-300 rounded-lg"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 備註 Modal */}
+        {showMemoModal && (
+          <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
+            <div className="bg-white p-6 rounded-lg shadow-lg w-96">
+              <h3 className="text-xl font-bold mb-4">編輯備註</h3>
+              <textarea
+                value={currentMemo.content}
+                onChange={e => setCurrentMemo({ ...currentMemo, content: e.target.value })}
+                className="w-full border px-3 py-2 rounded mb-4"
+              />
+              <div className="flex justify-end space-x-2">
+                <button
+                  onClick={saveMemo}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg"
+                >
+                  儲存
+                </button>
+                <button
+                  onClick={() => setShowMemoModal(false)}
+                  className="px-4 py-2 bg-gray-300 rounded-lg"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ✅ AI 評估結果 Modal（你提醒的部分，保留原樣） */}
+        {showAiModal && modalData && (
+          <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
+            <div className="bg-white rounded-lg shadow-lg max-w-2xl w-full p-8">
+              <h3 className="text-2xl font-bold mb-6 text-center">AI 評估結果</h3>
+              <div className="space-y-6 text-gray-800 leading-relaxed max-h-[70vh] overflow-y-auto">
+                <div>
+                  <h4 className="font-semibold mb-2">進度評估：</h4>
+                  <p>{modalData.進度評估}</p>
+                </div>
+                <div>
+                  <h4 className="font-semibold mb-2">風險判斷：</h4>
+                  <p>{modalData.風險判斷}</p>
+                </div>
+                <div>
+                  <h4 className="font-semibold mb-2">建議：</h4>
+                  <ul className="list-disc pl-6 space-y-1">
+                    {/* {modalData.建議.map((s, i) => (
+                      <li key={i}>{s}</li>
+                    ))} */}
+                    <p>{modalData.建議}</p>
+                  </ul>
+                </div>
+              </div>
+              <div className="mt-6 flex justify-center">
+                <button
+                  onClick={() => setShowAiModal(false)}
+                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  關閉
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ✅ Loading 畫面（保留原樣） */}
+        {loading && (
+          <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-40 z-50">
+            <div className="flex flex-col items-center">
+              <div className="w-12 h-12 border-4 border-blue-500 border-dashed rounded-full animate-spin"></div>
+              <p className="mt-4 text-white text-lg">AI 評估中，請稍候...</p>
+            </div>
+          </div>
+        )}
+
+        {/* ✅ 新增群組 Modal（保留原樣） */}
+        {showAddGroup && (
+          <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
+            <div className="bg-white p-6 rounded-lg shadow-lg w-96">
+              <h3 className="text-xl font-bold mb-4">新增群組</h3>
+              <input
+                type="text"
+                placeholder="群組名稱"
+                value={newGroupName}
+                onChange={e => setNewGroupName(e.target.value)}
+                className="w-full border px-3 py-2 rounded mb-4"
+              />
+              <div className="flex justify-end space-x-2">
+                <button
+                  onClick={addGroup}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg"
+                >
+                  新增
+                </button>
+                <button
+                  onClick={() => setShowAddGroup(false)}
+                  className="px-4 py-2 bg-gray-300 rounded-lg"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default ProjectManagementSystem;
