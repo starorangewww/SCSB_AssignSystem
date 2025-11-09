@@ -1,6 +1,6 @@
 {
   "files": {
-    "main.js": "/SCSB_AssignSystem/static/js/main.ace30209.js",
+    "main.js": "/SCSB_AssignSystem/static/js/main.aa941ddd.js",
     "static/media/logo_scsb.svg": "/SCSB_AssignSystem/static/media/logo_scsb.cadf8f173d6434f752a4b6caa3548205.svg",
     "static/media/icon_settings.svg": "/SCSB_AssignSystem/static/media/icon_settings.890c71283478a20522922fa1912dd468.svg",
     "static/media/icon_message.svg": "/SCSB_AssignSystem/static/media/icon_message.8f47f511516b684b68be1016b19ad5da.svg",
@@ -9,9 +9,9 @@
     "static/media/icon_list.svg": "/SCSB_AssignSystem/static/media/icon_list.5cdcd4846d473e71828d85641da78d0b.svg",
     "static/media/icon_home.svg": "/SCSB_AssignSystem/static/media/icon_home.cfc5df06e4332538ffa3952e290ca7ab.svg",
     "index.html": "/SCSB_AssignSystem/index.html",
-    "main.ace30209.js.map": "/SCSB_AssignSystem/static/js/main.ace30209.js.map"
+    "main.aa941ddd.js.map": "/SCSB_AssignSystem/static/js/main.aa941ddd.js.map"
   },
   "entrypoints": [
-    "static/js/main.ace30209.js"
+    "static/js/main.aa941ddd.js"
   ]
 }
